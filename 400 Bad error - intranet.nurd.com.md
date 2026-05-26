@@ -1,25 +1,171 @@
-Redis integration for intranet.nurd.com
-1. Verify Redis is already running
+# Redis Session Integration for `intranet.nurd.com`
 
-No need to install again if Redis is already configured:
+## Purpose
 
+This document describes the implementation of Redis-based session storage for `oauth2-proxy` used by `intranet.nurd.com`.
+
+The purpose of this change is to reduce browser cookie size and avoid oversized HTTP request issues causing:
+
+* HTTP 400 Bad Request
+* Missing JS/CSS resources
+* Authentication failures
+* Nginx request parsing issues
+
+---
+
+# Root Cause
+
+`oauth2-proxy` was storing complete session information in browser cookies.
+
+Request structure:
+
+```text
+Request URL + Query Parameters
++ OAuth Cookies
++ Additional Headers
+```
+
+For some users, cookie size became large enough that the overall request exceeded safe request processing limits.
+
+Result:
+
+```text
+Browser
+   ↓
+Nginx
+   ↓
+Request size exceeds processing limit
+   ↓
+HTTP 400 Bad Request
+```
+
+Increasing Nginx buffer settings alone is not a permanent fix because:
+
+* It increases memory allocation only
+* Does not remove internal parsing limitations
+* High values can increase memory usage
+* May create performance and security concerns
+
+---
+
+# Solution
+
+Move session storage from browser cookies to Redis.
+
+Before:
+
+```text
+Browser
+   ↓
+Large OAuth Cookie (~8KB+)
+   ↓
+Nginx
+   ↓
+400 Error
+```
+
+After:
+
+```text
+Browser
+   ↓
+Small Session ID (~100 bytes)
+   ↓
+oauth2-proxy
+   ↓
+Redis stores session information
+   ↓
+Nginx
+   ↓
+Application loads successfully
+```
+
+---
+
+# Redis Installation
+
+## Debian / Ubuntu
+
+Install Redis:
+
+```bash
+apt update
+apt install redis-server -y
+```
+
+Enable Redis service:
+
+```bash
+systemctl enable redis-server
+systemctl start redis-server
+```
+
+Verify service:
+
+```bash
 systemctl status redis-server
-
-Verify:
-
-redis-cli ping
+```
 
 Expected:
 
+```text
+active (running)
+```
+
+Test Redis:
+
+```bash
+redis-cli ping
+```
+
+Expected output:
+
+```text
 PONG
-2. Edit oauth2-proxy service for intranet
+```
 
-Open the service:
+---
 
+## RHEL / CentOS
+
+Install Redis:
+
+```bash
+yum install redis -y
+```
+
+Enable and start:
+
+```bash
+systemctl enable redis
+systemctl start redis
+```
+
+Verify:
+
+```bash
+redis-cli ping
+```
+
+Expected:
+
+```text
+PONG
+```
+
+---
+
+# Update oauth2-proxy Configuration
+
+Edit service file:
+
+```bash
 vi /etc/systemd/system/oauth2-proxy-intranet.nurd.com.service
+```
 
-Update ExecStart:
+Update:
 
+```ini
 [Unit]
 Description=oauth2-proxy-intranet.nurd.com
 
@@ -33,60 +179,107 @@ Environment=OAUTH2_PROXY_COOKIE_SECRET=xxxxxxxxxxxx
 Environment=OAUTH2_PROXY_PROMPT=select_account
 Environment=OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:2214
 Environment=OAUTH2_PROXY_EMAIL_DOMAINS=*
+
 Restart=always
 LimitNOFILE=10048576
 
 [Install]
 WantedBy=multi-user.target
+```
 
-Changes from Jira site:
+---
 
-Config file:
+# Apply Changes
 
-/etc/oauth2/intranet.nurd.com.yaml
+Reload systemd:
 
-Service:
-
-oauth2-proxy-intranet.nurd.com
-
-Port:
-
-2214
-
-(keep existing port if different)
-
-3. Reload and restart
+```bash
 systemctl daemon-reload
+```
+
+Restart Redis:
+
+```bash
+systemctl restart redis-server
+```
+
+Restart oauth2-proxy:
+
+```bash
 systemctl restart oauth2-proxy-intranet.nurd.com
-4. Verify Redis activity
+```
+
+---
+
+# Validation
+
+## Verify Redis activity
 
 Monitor Redis:
 
+```bash
 redis-cli monitor
+```
 
-Then login to intranet.nurd.com.
+Login to:
 
-Expected:
+```text
+https://intranet.nurd.com
+```
 
-GET session:xxxx
-SET session:xxxx
-EXPIRE session:xxxx
-5. Clear browser cookies
+Expected activity:
 
-Delete cookies for:
+```text
+SET session:xxxxx
+GET session:xxxxx
+EXPIRE session:xxxxx
+```
 
-intranet.nurd.com
+---
 
-Login again.
+## Verify browser cookies
 
-Expected result
+Open browser:
+
+```text
+F12 → Application → Cookies
+```
 
 Before:
 
-Browser → Large OAuth cookie → Nginx 400 → page/UI issue
+```text
+_oauth2_proxy_0 → several KB
+_oauth2_proxy_1 → several KB
+```
 
 After:
 
-Browser → Small session ID cookie → Redis stores session → Nginx accepts request → site works
+```text
+_oauth2_proxy → small session identifier
+```
 
-This reuses the same Redis instance and adds almost no additional resource usage. No separate Redis installation is needed.
+---
+
+# Expected Result
+
+* No HTTP 400 errors
+* Reduced request size
+* Stable authentication
+* Smaller browser cookies
+* Improved application stability
+
+---
+
+# Notes
+
+Typical Redis session usage:
+
+| Users | Approximate Memory |
+| ----- | ------------------ |
+| 100   | ~500 KB            |
+| 1000  | ~5 MB              |
+| 5000  | ~25 MB             |
+
+Redis usage remains minimal because only session information is stored.
+
+This approach is considered an industry-standard solution and is preferred over continuously increasing Nginx request limits.
