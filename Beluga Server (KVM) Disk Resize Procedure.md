@@ -1,138 +1,231 @@
-Beluga Server (KVM) Disk Resize Procedure
-Root Partition Expansion Using Swapfile
-Purpose
+# Beluga Server (KVM) Disk Resize Procedure
 
-This procedure describes how to increase the root filesystem size of a KVM virtual machine when the root partition is blocked by an extended partition and swap partition. The process removes the existing swap partition, expands the root partition, and recreates swap using a swapfile.
+## Root Partition Expansion Using Swapfile
 
-Prerequisites
+Increase the root filesystem size of a KVM virtual machine where the root partition is blocked by an extended partition and swap partition.
 
-Before proceeding, ensure the following:
+---
 
-The virtual disk has already been increased at the manifest level.
-The VM is running a Debian-based operating system.
-The root filesystem is formatted as ext4.
-A backup or snapshot of the VM is available.
-Step 1: Extend the Virtual Disk on the Host
+## Table of Contents
 
-Login to the KVM host and extend the logical volume backing the virtual machine disk.
+* [Prerequisites](#prerequisites)
+* [Step 1 - Extend the Virtual Disk](#step-1---extend-the-virtual-disk)
+* [Step 2 - Install Required Package](#step-2---install-required-package)
+* [Step 3 - Disable Swap](#step-3---disable-swap)
+* [Step 4 - Expand the Root Partition](#step-4---expand-the-root-partition)
+* [Step 5 - Resize the Filesystem](#step-5---resize-the-filesystem)
+* [Step 6 - Create a Swapfile](#step-6---create-a-swapfile)
+* [Step 7 - Verify the Configuration](#step-7---verify-the-configuration)
 
-Example:
+---
 
+## Prerequisites
+
+> [!IMPORTANT]
+> Before proceeding:
+>
+> * Disk size has already been increased at the manifest level.
+> * VM is running a Debian-based Linux OS.
+> * Root filesystem type is `ext4`.
+> * A backup or VM snapshot is strongly recommended.
+
+---
+
+# Step 1 - Extend the Virtual Disk
+
+Login to the physical host and extend the VM disk by **5 GB**.
+
+```bash
 lvextend -L +5G /dev/instances/testvm-virt.belugacdn.com-disk1
+```
 
-After extending the disk, verify that the VM can see the updated disk size.
+> [!TIP]
+> Verify that the VM can see the updated virtual disk size before proceeding.
 
-Step 2: Install Required Utilities
+---
 
-Login to the virtual machine and install the parted utility.
+# Step 2 - Install Required Package
 
+Login to the VM and install `parted`.
+
+```bash
 apt update
 apt install parted -y
-Step 3: Disable Swap
+```
 
-Before modifying disk partitions, disable swap.
+---
 
+# Step 3 - Disable Swap
+
+Disable swap before modifying partitions.
+
+```bash
 swapoff -a
+```
 
-Verify that swap is disabled:
+Verify swap is disabled:
 
+```bash
 swapon --show
+```
 
-Expected result:
+Expected output:
 
-No output
-Step 4: Expand the Root Partition
-Current Partition Layout
+```text
+(no output)
+```
 
-Review the current partition layout:
+> [!IMPORTANT]
+> Swap must be disabled before deleting the swap partition.
 
+---
+
+# Step 4 - Expand the Root Partition
+
+## Current Partition Layout
+
+```bash
 lsblk
+```
 
 Example:
 
+```text
 NAME    MAJ:MIN RM SIZE RO TYPE MOUNTPOINT
 vda     254:0    0 25G  0 disk
 ├─vda1  254:1    0 19G  0 part /
 ├─vda2  254:2    0 1K   0 part
 └─vda5  254:5    0 975M 0 part [SWAP]
-Modify Partitions
+```
 
-Start the partition editor:
+## Modify Partitions
 
+Start `parted`:
+
+```bash
 parted /dev/vda
+```
 
-Execute the following commands:
+Execute:
 
+```text
 print
 rm 5
 rm 2
 resizepart 1 100%
 quit
-Explanation
-vda5 is the existing swap partition.
-vda2 is the extended partition container.
+```
 
-These partitions occupy space immediately after the root partition and prevent the root filesystem from expanding into the newly added disk space.
+> [!WARNING]
+> `vda5` (swap) and `vda2` (extended partition) must be removed because they prevent `vda1` from expanding into the newly added disk space.
 
-Verify Partition Layout
+Verify the new layout:
+
+```bash
 lsblk
+```
 
-Expected result:
+Expected:
 
+```text
 NAME    MAJ:MIN RM SIZE RO TYPE MOUNTPOINT
 vda     254:0    0 25G  0 disk
 └─vda1  254:1    0 25G  0 part /
-Step 5: Resize the Filesystem
+```
 
-Expand the ext4 filesystem to utilize the additional partition space.
+---
 
+# Step 5 - Resize the Filesystem
+
+Expand the ext4 filesystem to use the newly available space.
+
+```bash
 resize2fs /dev/vda1
+```
 
-Verify the filesystem size:
+Verify:
 
+```bash
 df -h /
+```
 
 Example:
 
+```text
 Filesystem      Size  Used Avail Use% Mounted on
 /dev/vda1        25G  4.1G   19G  15% /
-Step 6: Create a Swapfile
+```
 
-Instead of recreating a swap partition, create a swapfile.
+> [!SUCCESS]
+> The root filesystem should now reflect the expanded size.
 
-Create the Swapfile
+---
+
+# Step 6 - Create a Swapfile
+
+Create a new 1 GB swapfile.
+
+```bash
 fallocate -l 1G /swapfile
 chmod 600 /swapfile
 mkswap /swapfile
 swapon /swapfile
-Configure Swapfile Persistence
+```
 
-Add the following entry to /etc/fstab:
+Configure swap persistence:
 
+```bash
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
-Step 7: Verification
+```
 
-Verify that the root filesystem has been expanded and the swapfile is active.
+> [!NOTE]
+> Swapfiles are easier to manage and simplify future disk expansion operations.
 
-Verify Disk Layout
+---
+
+# Step 7 - Verify the Configuration
+
+Verify disk layout:
+
+```bash
 lsblk
-Verify Filesystem Size
+```
+
+Verify filesystem size:
+
+```bash
 df -h /
-Verify Swap
+```
+
+Verify swap:
+
+```bash
 swapon --show
-Expected Outcome
+```
+
+---
+
+# Validation Checklist
+
+| Validation              | Command                    |
+| ----------------------- | -------------------------- |
+| Root partition expanded | `lsblk`                    |
+| Filesystem expanded     | `df -h /`                  |
+| Swapfile active         | `swapon --show`            |
+| Swapfile persistent     | `grep swapfile /etc/fstab` |
+
+---
+
+# Expected Outcome
 
 After completing this procedure:
 
-The root partition occupies all available disk space.
-The ext4 filesystem has been expanded successfully.
-The original swap partition has been removed.
-A swapfile is configured and enabled.
-Future disk expansions are simplified because no swap partition exists to block partition growth.
-Final Validation Checklist
-Validation Item	Command
-Root partition expanded	lsblk
-Filesystem expanded	df -h /
-Swapfile active	swapon --show
-Swapfile persistent after reboot	grep swapfile /etc/fstab
-Procedure Complete
+* ✅ Root partition uses all available disk space.
+* ✅ Filesystem has been expanded.
+* ✅ Swap partition has been removed.
+* ✅ Swapfile is active.
+* ✅ Future disk expansions are simpler because no swap partition blocks partition growth.
+
+---
+
+## Procedure Complete
