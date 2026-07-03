@@ -1,0 +1,11 @@
+# tracert ssms-ext.comodo.od.ua
+
+
+Find the interface ID
+# netsh interface ipv4 show interfaces
+
+Without interface ID
+route -p add 80.92.238.228 mask 255.255.255.255 162.253.156.1
+
+With interface ID Exact routing
+# route -p add 80.92.238.228 mask 255.255.255.255 162.253.156.1 IF 32
